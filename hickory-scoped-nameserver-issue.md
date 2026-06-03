@@ -230,6 +230,10 @@ away along with the scoped entry. hickory discards working state.
 The body above describes `hickory-resolver 0.26.1`. Reproduced locally against the
 in-tree `0.27.0-alpha.1` (`scoped-nameserver-addrs`), the picture has shifted:
 
+- **On `main` (`d54a46c8`) Change B is already present.** The macOS whole-config failure
+  from §1 no longer reproduces there; the Apple reader skips the scoped entry and keeps
+  the usable IPv4 resolver. The remaining open bug on `main` is Defect A.
+
 - **Change B has already landed here** — commit `c5e29b9da` ("skip unparseable
   nameservers on macOS instead of failing the whole load"). `apple.rs` now matches on
   `IpAddr::from_str`, `warn!`s, and `continue`s instead of `?`-propagating. So **probe
