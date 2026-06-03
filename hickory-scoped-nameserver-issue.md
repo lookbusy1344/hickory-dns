@@ -95,14 +95,38 @@ Two independent changes. **B is the cheap mitigation; A is the real fix.**
 
 ### Change A — carry the IPv6 scope id end-to-end
 
-1. **Representation.** Give `NameServerConfig` somewhere to hold a scope — either an
-   address type that admits a `scope_id`, or an explicit `scope_id: Option<u32>`
-   (meaningful only for IPv6 link-local). The bare-`IpAddr` public field is the blocker
-   and the crux of #3713.
+1. **Representation.** Give `NameServerConfig` somewhere to hold a scope. The bare-`IpAddr`
+   public field is the blocker and the crux of #3713. Two shapes were considered:
 
-2. **Connect path.** In `connection_provider.rs`, when the address is IPv6 and a scope is
-   present, build the socket as `SocketAddrV6::new(addr, config.port, 0, scope_id)` instead
-   of `SocketAddr::new(ip, config.port)`, so the kernel knows which interface to use.
+   - *(A) sibling field* — keep `pub ip: IpAddr`, add `pub scope_id: Option<u32>`. Minimal,
+     but permits meaningless states (a scope on an IPv4 address) and lets two servers that
+     differ only by scope collide in the pool's `IpAddr`-keyed identity sets.
+   - *(B) bundled type* — **chosen.** Replace the field with an enum whose IPv6 arm carries
+     the scope, so a scope on IPv4 is unrepresentable and scoped servers have distinct
+     identity. This mirrors `std`, where `scope_id` lives only on `SocketAddrV6`, never on
+     `SocketAddrV4`:
+
+     ```rust
+     pub enum ServerAddr {
+         V4(Ipv4Addr),
+         V6 { addr: Ipv6Addr, scope_id: Option<u32> },
+     }
+
+     pub struct NameServerConfig {
+         pub addr: ServerAddr,   // was: pub ip: IpAddr
+         // ...
+     }
+     ```
+
+     `ServerAddr` exposes `ip() -> IpAddr` for the many identity/logging call sites, and
+     `socket_addr(port) -> SocketAddr` to assemble the connect address. The trade-off is a
+     wider but mechanical break: every `config.ip` becomes `config.addr.ip()`.
+
+2. **Connect path.** In `connection_provider.rs`, when the address is IPv6 with a scope,
+   build the socket as `SocketAddrV6::new(addr, config.port, 0, scope_id)` instead of
+   `SocketAddr::new(ip, config.port)`, so the kernel knows which interface to use. With (B)
+   this is `addr.socket_addr(config.port)`; the `ServerAddr` is threaded through
+   `ConnectionProvider::new_connection` in place of the bare `IpAddr`.
 
 3. **Parsing.** In the `system_conf` readers, parse the `%zone` suffix into a numeric scope
    id — numeric zones directly, interface names via `libc::if_nametoindex` — and populate
@@ -225,3 +249,14 @@ A self-contained probe covering all of the above lives at
 `crates/resolver/examples/scoped_nameserver_repro.rs` (run unsandboxed for the macOS
 path; the System Configuration store is unreachable from a sandbox and returns the
 misleading "failed to access System Configuration dynamic store" noted in §4).
+
+### Chosen fix on this branch
+
+Change A is being implemented with the **bundled `ServerAddr` type (option B in §3.A)** —
+`NameServerConfig.ip: IpAddr` is replaced by `NameServerConfig.addr: ServerAddr`, whose
+IPv6 arm carries `scope_id: Option<u32>`. Rationale: it makes a scope on an IPv4 address
+unrepresentable and gives scope-distinguished servers distinct identity, mirroring `std`'s
+own model (`scope_id` exists only on `SocketAddrV6`). The connect path uses
+`addr.socket_addr(port)`, and the `system_conf` readers resolve a `%zone` suffix to a
+numeric scope id (numeric zones directly; interface names via `libc::if_nametoindex`).
+Change B (skip-and-keep) is already present for macOS and is extended to the Linux path.
