@@ -75,7 +75,11 @@ mod scope_tests {
     #[test]
     fn loopback_interface_resolves_to_nonzero_index() {
         // The loopback interface exists on every host and has a non-zero index.
-        let name = if cfg!(target_vendor = "apple") { "lo0" } else { "lo" };
+        let name = if cfg!(target_vendor = "apple") {
+            "lo0"
+        } else {
+            "lo"
+        };
         assert!(scope_id_from_zone(name).is_some_and(|idx| idx > 0));
     }
 

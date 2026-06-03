@@ -373,7 +373,11 @@ mod server_addr_tests {
         let SocketAddr::V6(v6) = addr.socket_addr(53) else {
             panic!("expected an IPv6 socket address");
         };
-        assert_eq!(v6.scope_id(), SCOPE, "scope id was dropped on the way to the socket");
+        assert_eq!(
+            v6.scope_id(),
+            SCOPE,
+            "scope id was dropped on the way to the socket"
+        );
         assert_eq!(v6.port(), 53);
     }
 
@@ -429,7 +433,11 @@ mod server_addr_tests {
         let json = r#"{"ip":"fe80::1%3","connections":[{"protocol":{"type":"udp"}}]}"#;
         let config = serde_json::from_str::<NameServerConfig>(json).unwrap();
         assert_eq!(config.addr.scope_id(), Some(3));
-        assert!(serde_json::to_string(&config).unwrap().contains(r#""ip":"fe80::1%3""#));
+        assert!(
+            serde_json::to_string(&config)
+                .unwrap()
+                .contains(r#""ip":"fe80::1%3""#)
+        );
     }
 }
 

@@ -189,9 +189,11 @@ impl<P: ConnectionProvider> NameServer<P> {
                 }
 
                 if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
-                    cx.transport_state()
-                        .await
-                        .error_received(self.config.addr.ip(), protocol, &error);
+                    cx.transport_state().await.error_received(
+                        self.config.addr.ip(),
+                        protocol,
+                        &error,
+                    );
                 }
 
                 // These are connection failures, not lookup failures, that is handled in the resolver layer

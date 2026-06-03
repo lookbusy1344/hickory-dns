@@ -14,14 +14,20 @@ fn main() {
     //     Deterministic, environment-free, holds on any platform.
     let parsed = IpAddr::from_str("fe80::1%en0");
     println!("(1) IpAddr::from_str(\"fe80::1%en0\") = {parsed:?}");
-    assert!(parsed.is_err(), "expected scoped address to fail IpAddr parse");
+    assert!(
+        parsed.is_err(),
+        "expected scoped address to fail IpAddr parse"
+    );
 
     // (2) Defect A, type-level gap: a scope cannot survive in a SocketAddr built
     //     via SocketAddr::new(IpAddr::V6(..), port) — scope_id is forced to 0.
     let SocketAddr::V6(v6) = SocketAddr::new(IpAddr::from_str("fe80::1").unwrap(), 53) else {
         unreachable!()
     };
-    println!("(2) SocketAddr::new(fe80::1, 53).scope_id() = {}", v6.scope_id());
+    println!(
+        "(2) SocketAddr::new(fe80::1, 53).scope_id() = {}",
+        v6.scope_id()
+    );
     assert_eq!(v6.scope_id(), 0, "scope id should be silently lost");
 
     // (2b) NameServerConfig itself has nowhere to hold a scope: its address is a bare
@@ -44,7 +50,10 @@ fn main() {
             Ok((cfg, _)) => {
                 println!("(3) parse_resolv_conf with a scoped nameserver succeeded:");
                 for (i, ns) in cfg.name_servers().iter().enumerate() {
-                    println!("      nameserver[{i}] = {}  (zone id dropped, unreachable if link-local)", ns.ip);
+                    println!(
+                        "      nameserver[{i}] = {}  (zone id dropped, unreachable if link-local)",
+                        ns.ip
+                    );
                 }
             }
             Err(e) => println!("(3) parse_resolv_conf error: {e:?}"),
@@ -56,6 +65,9 @@ fn main() {
     //     for the whole config — the scoped entry is dropped and usable servers kept.
     #[cfg(target_vendor = "apple")]
     {
-        println!("(4) read_system_conf() = {:?}", hickory_resolver::system_conf::read_system_conf());
+        println!(
+            "(4) read_system_conf() = {:?}",
+            hickory_resolver::system_conf::read_system_conf()
+        );
     }
 }
