@@ -198,3 +198,30 @@ away along with the scoped entry. hickory discards working state.
 
 **Minimum to stop discarding working configuration:** Change B.
 **Correct, complete fix:** Change A — the substance of issue #3713.
+
+---
+
+## 6. Reproduction status on this branch (2026-06-03)
+
+The body above describes `hickory-resolver 0.26.1`. Reproduced locally against the
+in-tree `0.27.0-alpha.1` (`scoped-nameserver-addrs`), the picture has shifted:
+
+- **Change B has already landed here** — commit `c5e29b9da` ("skip unparseable
+  nameservers on macOS instead of failing the whole load"). `apple.rs` now matches on
+  `IpAddr::from_str`, `warn!`s, and `continue`s instead of `?`-propagating. So **probe
+  (3) no longer reproduces the documented `Err`** — on an affected host it returns
+  `Ok(..)` carrying the usable IPv4 server, with the scoped entry skipped. The "macOS"
+  row of the §5 table no longer applies to this tree.
+
+- **Defect A is unchanged and still reproduces.** `config.rs` still has `pub ip:
+  IpAddr` and `connection_provider.rs` still builds `SocketAddr::new(ip, config.port)`.
+  Probes (1) and (2) hold verbatim. A scoped nameserver still cannot be stored or
+  dialled. This is the outstanding work for #3713.
+
+- The Linux silent-zone-drop (`unix.rs`, `ip.into(): IpAddr` on a
+  `ScopedIp::V6(_, Some(zone))`) is likewise still present.
+
+A self-contained probe covering all of the above lives at
+`crates/resolver/examples/scoped_nameserver_repro.rs` (run unsandboxed for the macOS
+path; the System Configuration store is unreachable from a sandbox and returns the
+misleading "failed to access System Configuration dynamic store" noted in §4).
