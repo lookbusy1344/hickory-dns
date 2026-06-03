@@ -357,6 +357,82 @@ impl<'de> Deserialize<'de> for ServerAddr {
     }
 }
 
+#[cfg(test)]
+mod server_addr_tests {
+    use super::*;
+
+    const SCOPE: u32 = 3;
+
+    /// The crux of Defect A (hickory-dns#3713): a scoped link-local address must reach the
+    /// socket with its scope intact. The naive `SocketAddr::new(ip, port)` forces
+    /// `scope_id = 0`, so a `fe80::…` server is undialable. This fails unless the scope is
+    /// threaded through `ServerAddr::socket_addr`.
+    #[test]
+    fn socket_addr_carries_ipv6_scope() {
+        let addr = ServerAddr::from(Ipv6Addr::from_str("fe80::1").unwrap()).with_scope_id(SCOPE);
+        let SocketAddr::V6(v6) = addr.socket_addr(53) else {
+            panic!("expected an IPv6 socket address");
+        };
+        assert_eq!(v6.scope_id(), SCOPE, "scope id was dropped on the way to the socket");
+        assert_eq!(v6.port(), 53);
+    }
+
+    #[test]
+    fn scope_id_is_an_ipv4_noop() {
+        let addr = ServerAddr::from(Ipv4Addr::LOCALHOST).with_scope_id(SCOPE);
+        assert_eq!(addr.scope_id(), None);
+        assert!(matches!(addr.socket_addr(53), SocketAddr::V4(_)));
+    }
+
+    #[test]
+    fn from_str_handles_numeric_zone_only() {
+        assert_eq!(
+            ServerAddr::from_str("fe80::1%3").unwrap(),
+            ServerAddr::V6 {
+                addr: Ipv6Addr::from_str("fe80::1").unwrap(),
+                scope_id: Some(3),
+            }
+        );
+        assert_eq!(
+            ServerAddr::from_str("192.0.2.1").unwrap(),
+            ServerAddr::V4(Ipv4Addr::from_str("192.0.2.1").unwrap())
+        );
+        // Interface-name zones are rejected here; they are resolved in `system_conf`.
+        assert!(ServerAddr::from_str("fe80::1%en0").is_err());
+        // A zone on an IPv4 address is invalid.
+        assert!(ServerAddr::from_str("192.0.2.1%3").is_err());
+    }
+
+    #[test]
+    fn display_round_trips() {
+        for s in ["192.0.2.1", "2001:db8::1", "fe80::1%3"] {
+            let addr = ServerAddr::from_str(s).unwrap();
+            assert_eq!(addr.to_string(), s);
+            assert_eq!(ServerAddr::from_str(&addr.to_string()).unwrap(), addr);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_uses_string_form() {
+        let addr = ServerAddr::from_str("fe80::1%3").unwrap();
+        let json = serde_json::to_string(&addr).unwrap();
+        assert_eq!(json, "\"fe80::1%3\"");
+        assert_eq!(serde_json::from_str::<ServerAddr>(&json).unwrap(), addr);
+    }
+
+    /// The serialized key stays `ip` (string form), so existing config files keep working
+    /// and a numeric IPv6 zone rides along.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn nameserver_config_keeps_ip_key_with_scope() {
+        let json = r#"{"ip":"fe80::1%3","connections":[{"protocol":{"type":"udp"}}]}"#;
+        let config = serde_json::from_str::<NameServerConfig>(json).unwrap();
+        assert_eq!(config.addr.scope_id(), Some(3));
+        assert!(serde_json::to_string(&config).unwrap().contains(r#""ip":"fe80::1%3""#));
+    }
+}
+
 /// Configuration for the NameServer
 #[derive(Clone, Debug)]
 #[cfg_attr(

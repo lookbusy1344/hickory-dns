@@ -62,3 +62,25 @@ fn scope_id_from_zone(zone: &str) -> Option<u32> {
     // `if_nametoindex` returns 0 to signal an unknown interface.
     (scope_id != 0).then_some(scope_id)
 }
+
+#[cfg(all(test, feature = "system-config", unix, not(target_os = "android")))]
+mod scope_tests {
+    use super::scope_id_from_zone;
+
+    #[test]
+    fn numeric_zone_is_used_directly() {
+        assert_eq!(scope_id_from_zone("3"), Some(3));
+    }
+
+    #[test]
+    fn loopback_interface_resolves_to_nonzero_index() {
+        // The loopback interface exists on every host and has a non-zero index.
+        let name = if cfg!(target_vendor = "apple") { "lo0" } else { "lo" };
+        assert!(scope_id_from_zone(name).is_some_and(|idx| idx > 0));
+    }
+
+    #[test]
+    fn unknown_interface_is_rejected() {
+        assert_eq!(scope_id_from_zone("nonexistent-iface"), None);
+    }
+}

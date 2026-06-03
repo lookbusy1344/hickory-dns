@@ -144,8 +144,20 @@ mod tests {
     fn test_name_server() {
         let parsed = parse_resolv_conf("nameserver 127.0.0.1").expect("failed");
         let cfg = empty_config(nameserver_config("127.0.0.1"));
-        assert_eq!(cfg.name_servers()[0].ip, parsed.0.name_servers()[0].ip);
+        assert_eq!(cfg.name_servers()[0].addr, parsed.0.name_servers()[0].addr);
         is_default_opts(parsed.1);
+    }
+
+    #[test]
+    fn test_scoped_nameserver_zone_is_preserved() {
+        // Defect A on the unix path: `resolv_conf` keeps the zone as
+        // `ScopedIp::V6(_, Some(zone))`, which the old `ip.into(): IpAddr` silently dropped,
+        // leaving a dead scope-0 address. The zone must survive as a numeric scope id.
+        let parsed =
+            parse_resolv_conf("nameserver fe80::1%1\nnameserver 192.0.2.1\n").expect("failed");
+        let servers = parsed.0.name_servers();
+        assert_eq!(servers[0].addr.scope_id(), Some(1));
+        assert_eq!(servers[1].addr.scope_id(), None);
     }
 
     #[test]
@@ -165,7 +177,7 @@ mod tests {
         let mut cfg = empty_config(nameserver_config("127.0.0.53"));
 
         {
-            assert_eq!(cfg.name_servers()[0].ip, parsed.0.name_servers()[0].ip);
+            assert_eq!(cfg.name_servers()[0].addr, parsed.0.name_servers()[0].addr);
             is_default_opts(parsed.1);
         }
 
@@ -191,7 +203,7 @@ mod tests {
         let parsed = parse_resolv_conf("domain example.com\nnameserver 127.0.0.1").expect("failed");
         let mut cfg = empty_config(nameserver_config("127.0.0.1"));
         cfg.set_domain(Name::from_str("example.com").unwrap());
-        assert_eq!(cfg.name_servers()[0].ip, parsed.0.name_servers()[0].ip);
+        assert_eq!(cfg.name_servers()[0].addr, parsed.0.name_servers()[0].addr);
         assert_eq!(cfg.domain(), parsed.0.domain());
         is_default_opts(parsed.1);
     }
