@@ -1133,6 +1133,74 @@ pub(crate) mod duration_opt {
     }
 }
 
+/// Characterization tests for hickory-dns#3713: a scoped IPv6 nameserver
+/// (e.g. `fe80::1%en0`) cannot be represented or dialled with the current
+/// `NameServerConfig { ip: IpAddr }` model. These tests assert the *buggy*
+/// behavior of the present API so the defect is demonstrated by running code;
+/// each assertion is annotated with the behavior that is actually wanted.
+///
+/// Deterministic and network-free — they exercise only `std` + the public
+/// `NameServerConfig` API and the exact dial expression used in
+/// `connection_provider.rs` (`SocketAddr::new(ip, config.port)`), so they hold
+/// on every platform.
+#[cfg(test)]
+mod scoped_nameserver_repro {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    const PORT: u16 = 53;
+
+    /// Defect A, step 1: the zone-bearing string a router advertises cannot be
+    /// parsed into `IpAddr`, which is the only thing `NameServerConfig` can hold.
+    /// To store the server at all, hickory must strip the `%en0` zone.
+    #[test]
+    fn scoped_address_cannot_be_parsed_into_ip_addr() {
+        let parsed = IpAddr::from_str("fe80::1%en0");
+        // WANTED: a representation that retains the zone id. ACTUAL: parse error,
+        // so the zone is unrepresentable in `NameServerConfig.ip`.
+        assert!(
+            parsed.is_err(),
+            "old API has no way to parse/store the zone id; got {parsed:?}"
+        );
+    }
+
+    /// Defect A, step 2 — RED test. This asserts the behavior we *want*: a
+    /// link-local nameserver should be dialled with a non-zero scope id so the
+    /// kernel knows which interface to use. It FAILS on `main` because, once the
+    /// server is stored as a bare `IpAddr` (zone necessarily stripped), the dial
+    /// address hickory builds — `SocketAddr::new(ip, port)`, copied verbatim from
+    /// `connection_provider.rs` — forces `scope_id == 0`. The failure of this
+    /// test *is* the demonstration of #3713; it passes once a scope can be carried.
+    ///
+    /// This is a real, reproduced failure (see `hickory-scoped-nameserver-issue.md`):
+    /// on a Mac whose router advertises itself as `fe80::1%en0`, the configured
+    /// nameserver is dialled at scope 0 and is unreachable. It is left failing on
+    /// purpose — not `#[ignore]`d, not `#[should_panic]` — so the broken state is
+    /// visible in the suite until the scope can be carried end-to-end.
+    #[test]
+    fn dial_address_for_link_local_server_should_carry_scope() {
+        // The best hickory can do with the old API: drop the zone, keep the bare addr.
+        let config = NameServerConfig::udp_and_tcp(IpAddr::from_str("fe80::1").unwrap());
+
+        // Exactly how connection_provider.rs:new_connection builds the remote address.
+        let remote_addr = SocketAddr::new(config.ip, PORT);
+
+        let SocketAddr::V6(v6) = remote_addr else {
+            panic!("expected an IPv6 socket address");
+        };
+
+        // WANTED: a non-zero scope id (e.g. if_nametoindex("en0")) so the link-local
+        // server is reachable. On `main` this is 0 — the assertion fails, proving the bug.
+        assert_ne!(
+            v6.scope_id(),
+            0,
+            "scoped nameserver must be dialled with a non-zero scope id; \
+             old API forces scope 0, so the link-local server is unreachable"
+        );
+    }
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
