@@ -283,7 +283,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let udp = opts.udp || !opts.tcp;
     let tcp = opts.tcp || !opts.udp;
 
-    name_servers.retain(|ns| (ipv4 && ns.ip.is_ipv4()) || (ipv6 && ns.ip.is_ipv6()));
+    name_servers.retain(|ns| (ipv4 && ns.addr.ip().is_ipv4()) || (ipv6 && ns.addr.ip().is_ipv6()));
     for ns in name_servers.iter_mut() {
         ns.connections.retain(|conn| {
             (udp && conn.protocol == ProtocolConfig::Udp)

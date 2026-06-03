@@ -121,7 +121,7 @@ impl<P: ConnectionProvider> NameServer<P> {
                         if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
                             cx.transport_state()
                                 .await
-                                .response_received(self.config.ip, protocol);
+                                .response_received(self.config.addr.ip(), protocol);
                         }
                         return Ok(response);
                     }
@@ -154,7 +154,7 @@ impl<P: ConnectionProvider> NameServer<P> {
                 if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
                     cx.transport_state()
                         .await
-                        .error_received(self.config.ip, protocol, &err)
+                        .error_received(self.config.addr.ip(), protocol, &err)
                 }
                 Err(err)
             }
@@ -191,7 +191,7 @@ impl<P: ConnectionProvider> NameServer<P> {
                 if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
                     cx.transport_state()
                         .await
-                        .error_received(self.config.ip, protocol, &error);
+                        .error_received(self.config.addr.ip(), protocol, &error);
                 }
 
                 // These are connection failures, not lookup failures, that is handled in the resolver layer
@@ -214,7 +214,7 @@ impl<P: ConnectionProvider> NameServer<P> {
             connections
                 .retain(|conn| matches!(conn.meta.status(), Status::Init | Status::Established));
             if let Some(conn) = policy.select_connection(
-                self.config.ip,
+                self.config.addr.ip(),
                 &*cx.transport_state().await,
                 &cx.opportunistic_encryption,
                 &connections,
@@ -227,7 +227,7 @@ impl<P: ConnectionProvider> NameServer<P> {
         debug!(config = ?self.config, "connecting");
         let config = policy
             .select_connection_config(
-                self.config.ip,
+                self.config.addr.ip(),
                 &*cx.transport_state().await,
                 &cx.opportunistic_encryption,
                 &self.config.connections,
@@ -238,14 +238,14 @@ impl<P: ConnectionProvider> NameServer<P> {
         if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
             cx.transport_state()
                 .await
-                .initiate_connection(self.config.ip, protocol);
+                .initiate_connection(self.config.addr.ip(), protocol);
         } else if cx.opportunistic_encryption.is_enabled() && !protocol.is_encrypted() {
             self.consider_probe_encrypted_transport(&policy, cx).await;
         }
 
         // Establish connection
         let handle = Box::pin(self.connection_provider.new_connection(
-            self.config.ip,
+            self.config.addr,
             config,
             cx,
         )?)
@@ -254,7 +254,7 @@ impl<P: ConnectionProvider> NameServer<P> {
         if cx.opportunistic_encryption.is_enabled() && protocol.is_encrypted() {
             cx.transport_state()
                 .await
-                .complete_connection(self.config.ip, protocol);
+                .complete_connection(self.config.addr.ip(), protocol);
         }
 
         // Store the new connection (with lock)
@@ -272,7 +272,7 @@ impl<P: ConnectionProvider> NameServer<P> {
     }
 
     pub(super) fn ip(&self) -> IpAddr {
-        self.config.ip
+        self.config.addr.ip()
     }
 
     pub(crate) fn decayed_srtt(&self) -> f64 {
@@ -336,7 +336,7 @@ impl<P: ConnectionProvider> NameServer<P> {
         let should_probe = {
             let state = cx.transport_state().await;
             state.should_probe_encrypted(
-                self.config.ip,
+                self.config.addr.ip(),
                 probe_protocol,
                 &cx.opportunistic_encryption,
             )
@@ -410,11 +410,11 @@ impl<P: ConnectionProvider> ProbeRequest<P> {
         metrics: ProbeMetrics,
     ) -> Result<Self, NetError> {
         Ok(Self {
-            ip: ns.config.ip,
+            ip: ns.config.addr.ip(),
             proto: config.protocol.to_protocol(),
             connecting: ns
                 .connection_provider
-                .new_connection(ns.config.ip, config, cx)?,
+                .new_connection(ns.config.addr, config, cx)?,
             context: cx.clone(),
             #[cfg(all(feature = "metrics", any(feature = "__tls", feature = "__quic")))]
             metrics,
@@ -993,7 +993,7 @@ mod tests {
         });
 
         let config = NameServerConfig {
-            ip: server_addr.ip(),
+            addr: server_addr.ip().into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig {
                 port: server_addr.port(),
@@ -2112,7 +2112,7 @@ mod mock_provider {
     use tokio::net::UdpSocket;
 
     use super::*;
-    use crate::config::ProtocolConfig;
+    use crate::config::{ProtocolConfig, ServerAddr};
     use crate::net::runtime::TokioTime;
     use crate::net::runtime::iocompat::AsyncIoTokioAsStd;
     use crate::proto::op::Message;
@@ -2143,13 +2143,13 @@ mod mock_provider {
 
         fn new_connection(
             &self,
-            ip: IpAddr,
+            addr: ServerAddr,
             config: &ConnectionConfig,
             _cx: &PoolContext,
         ) -> Result<Self::FutureConn, NetError> {
             self.new_connection_calls
                 .lock()
-                .push((ip, config.protocol.clone()));
+                .push((addr.ip(), config.protocol.clone()));
 
             Ok(Box::pin(future::ready(match &self.new_connection_error {
                 Some(err) => Err(err.clone()),

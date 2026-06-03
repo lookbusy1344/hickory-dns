@@ -17,6 +17,9 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+use resolv_conf::ScopedIp;
+use tracing::warn;
+
 use crate::config::{NameServerConfig, ResolverConfig, ResolverOpts};
 use crate::net::NetError;
 use crate::proto::rr::Name;
@@ -52,10 +55,15 @@ fn into_resolver_config(
     };
 
     // nameservers
+    //
+    // `resolv_conf` preserves an IPv6 zone as `ScopedIp::V6(_, Some(zone))`. Carry it into
+    // the config as a numeric scope id rather than discarding it (which would leave a dead
+    // scope-0 link-local address). An entry whose zone cannot be resolved is skipped rather
+    // than kept in a form that can never answer.
     let nameservers = parsed_config
         .nameservers
         .iter()
-        .map(|ip| NameServerConfig::udp_and_tcp(ip.into()))
+        .filter_map(scoped_nameserver_config)
         .collect::<Vec<_>>();
     if nameservers.is_empty() {
         Err(io::Error::other("no nameservers found in config"))?;
@@ -86,6 +94,27 @@ fn into_resolver_config(
     };
 
     Ok((config, options))
+}
+
+/// Builds a [`NameServerConfig`] from a `resolv_conf` nameserver entry, resolving an IPv6
+/// zone to a numeric scope id. Returns `None` (skipping the entry) when a zone is present
+/// but cannot be resolved.
+fn scoped_nameserver_config(scoped: &ScopedIp) -> Option<NameServerConfig> {
+    let config = NameServerConfig::udp_and_tcp(scoped.into());
+    match scoped {
+        ScopedIp::V6(addr, Some(zone)) => match super::scope_id_from_zone(zone) {
+            Some(scope_id) => Some(config.with_scope_id(scope_id)),
+            None => {
+                warn!(
+                    nameserver = %addr,
+                    zone = %zone,
+                    "ignoring nameserver with unresolvable IPv6 zone"
+                );
+                None
+            }
+        },
+        _ => Some(config),
+    }
 }
 
 #[cfg(test)]

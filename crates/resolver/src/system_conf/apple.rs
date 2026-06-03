@@ -35,7 +35,15 @@ pub fn read_system_conf() -> Result<(ResolverConfig, ResolverOpts), ProtoError> 
     let mut nameservers = Vec::with_capacity(nameservers_cf.len() as usize);
     for n in &*nameservers_cf {
         let s = Cow::from(&*n);
-        let addr = match IpAddr::from_str(&s) {
+
+        // An entry may carry an IPv6 zone, e.g. `fe80::1%en0`, which the bare `IpAddr`
+        // parser rejects. Split the zone off and parse the address on its own.
+        let (addr_str, zone) = match s.split_once('%') {
+            Some((addr, zone)) => (addr, Some(zone)),
+            None => (&*s, None),
+        };
+
+        let addr = match IpAddr::from_str(addr_str) {
             Ok(addr) => addr,
             Err(e) => {
                 warn!(
@@ -46,7 +54,23 @@ pub fn read_system_conf() -> Result<(ResolverConfig, ResolverOpts), ProtoError> 
                 continue;
             }
         };
-        nameservers.push(NameServerConfig::udp_and_tcp(addr));
+
+        let mut config = NameServerConfig::udp_and_tcp(addr);
+        if let Some(zone) = zone {
+            match super::scope_id_from_zone(zone) {
+                Some(scope_id) => config = config.with_scope_id(scope_id),
+                None => {
+                    warn!(
+                        nameserver = %s,
+                        zone = %zone,
+                        "ignoring nameserver with unresolvable IPv6 zone"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        nameservers.push(config);
     }
 
     let search_domains_cf =

@@ -25,7 +25,7 @@ use hickory_proto::ProtoError;
 use hickory_proto::op::{DnsRequest, DnsResponse, Message, Query};
 use hickory_proto::rr::rdata::{CNAME, NS, SOA};
 use hickory_proto::rr::{Name, RData, Record};
-use hickory_resolver::config::ConnectionConfig;
+use hickory_resolver::config::{ConnectionConfig, ServerAddr};
 use hickory_resolver::{ConnectionProvider, PoolContext};
 
 pub struct TcpPlaceholder;
@@ -131,7 +131,7 @@ impl<O: OnSend + Unpin> ConnectionProvider for MockConnProvider<O> {
 
     fn new_connection(
         &self,
-        _: IpAddr,
+        _: ServerAddr,
         _config: &ConnectionConfig,
         _cx: &PoolContext,
     ) -> Result<Self::FutureConn, NetError> {

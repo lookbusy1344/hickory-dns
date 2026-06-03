@@ -43,3 +43,22 @@ mod apple;
 #[cfg(target_vendor = "apple")]
 #[cfg(feature = "system-config")]
 pub use self::apple::read_system_conf;
+
+/// Resolves an IPv6 zone (the `%zone` suffix of an address such as `fe80::1%en0`) to a
+/// numeric scope id suitable for a [`SocketAddrV6`](std::net::SocketAddrV6).
+///
+/// A numeric zone is the scope id directly; an interface name is resolved via
+/// `if_nametoindex`. Returns `None` if an interface name does not resolve to an index.
+#[cfg(all(feature = "system-config", unix, not(target_os = "android")))]
+fn scope_id_from_zone(zone: &str) -> Option<u32> {
+    if let Ok(scope_id) = zone.parse::<u32>() {
+        return Some(scope_id);
+    }
+
+    let name = std::ffi::CString::new(zone).ok()?;
+    // SAFETY: `name` is a valid NUL-terminated C string that outlives the call, and
+    // `if_nametoindex` only reads from it.
+    let scope_id = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    // `if_nametoindex` returns 0 to signal an unknown interface.
+    (scope_id != 0).then_some(scope_id)
+}

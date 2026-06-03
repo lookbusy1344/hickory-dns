@@ -1070,6 +1070,7 @@ dependencies = [
  "ipconfig",
  "ipnet",
  "jni",
+ "libc",
  "lru-cache",
  "metrics",
  "metrics-util",

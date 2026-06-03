@@ -9,8 +9,10 @@
 #![allow(clippy::use_self)]
 
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(all(
@@ -192,6 +194,169 @@ impl ResolverConfig {
     }
 }
 
+/// The address of a DNS name server.
+///
+/// Unlike [`IpAddr`], this can carry an IPv6 scope (zone) identifier, which is required to
+/// reach a link-local nameserver such as `fe80::1%en0`. The scope lives only on the IPv6
+/// variant, mirroring the standard library, where a `scope_id` exists on [`SocketAddrV6`]
+/// but has no place on [`SocketAddrV4`](std::net::SocketAddrV4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ServerAddr {
+    /// An IPv4 address.
+    V4(Ipv4Addr),
+    /// An IPv6 address with an optional scope (zone) identifier.
+    V6 {
+        /// The IPv6 address.
+        addr: Ipv6Addr,
+        /// The scope (zone) identifier. Meaningful only for link-local (`fe80::/10`)
+        /// addresses, where it selects the interface the address is reachable on; it
+        /// corresponds to `sin6_scope_id` on a `SocketAddrV6`.
+        scope_id: Option<u32>,
+    },
+}
+
+impl ServerAddr {
+    /// Returns the bare IP address, discarding any scope identifier.
+    pub fn ip(&self) -> IpAddr {
+        match *self {
+            Self::V4(addr) => IpAddr::V4(addr),
+            Self::V6 { addr, .. } => IpAddr::V6(addr),
+        }
+    }
+
+    /// Returns the IPv6 scope (zone) identifier, or `None` for IPv4 and unscoped IPv6.
+    pub fn scope_id(&self) -> Option<u32> {
+        match *self {
+            Self::V4(_) => None,
+            Self::V6 { scope_id, .. } => scope_id,
+        }
+    }
+
+    /// Sets the IPv6 scope (zone) identifier.
+    ///
+    /// This is a no-op for IPv4 addresses, where a scope is not meaningful.
+    pub fn with_scope_id(mut self, scope_id: u32) -> Self {
+        if let Self::V6 { scope_id: slot, .. } = &mut self {
+            *slot = Some(scope_id);
+        }
+        self
+    }
+
+    /// Builds a [`SocketAddr`] at the given port, carrying any scope identifier into the
+    /// resulting [`SocketAddrV6`] so the kernel can reach a link-local address.
+    pub fn socket_addr(&self, port: u16) -> SocketAddr {
+        match *self {
+            Self::V4(addr) => SocketAddr::from((addr, port)),
+            Self::V6 { addr, scope_id } => {
+                SocketAddr::V6(SocketAddrV6::new(addr, port, 0, scope_id.unwrap_or(0)))
+            }
+        }
+    }
+}
+
+impl From<IpAddr> for ServerAddr {
+    fn from(ip: IpAddr) -> Self {
+        match ip {
+            IpAddr::V4(addr) => Self::V4(addr),
+            IpAddr::V6(addr) => Self::V6 {
+                addr,
+                scope_id: None,
+            },
+        }
+    }
+}
+
+impl From<Ipv4Addr> for ServerAddr {
+    fn from(addr: Ipv4Addr) -> Self {
+        Self::V4(addr)
+    }
+}
+
+impl From<Ipv6Addr> for ServerAddr {
+    fn from(addr: Ipv6Addr) -> Self {
+        Self::V6 {
+            addr,
+            scope_id: None,
+        }
+    }
+}
+
+impl fmt::Display for ServerAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::V4(addr) => write!(f, "{addr}"),
+            Self::V6 {
+                addr,
+                scope_id: None,
+            } => write!(f, "{addr}"),
+            Self::V6 {
+                addr,
+                scope_id: Some(scope_id),
+            } => write!(f, "{addr}%{scope_id}"),
+        }
+    }
+}
+
+/// Error returned when a [`ServerAddr`] cannot be parsed from a string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerAddrParseError(String);
+
+impl fmt::Display for ServerAddrParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ServerAddrParseError {}
+
+impl FromStr for ServerAddr {
+    type Err = ServerAddrParseError;
+
+    /// Parses an address with an optional **numeric** IPv6 zone, e.g. `192.0.2.1`,
+    /// `2001:db8::1`, or `fe80::1%3`.
+    ///
+    /// Interface-name zones (`fe80::1%en0`) are deliberately rejected here: resolving a
+    /// name to a scope id is a platform-specific runtime operation. The `system_conf`
+    /// readers perform that resolution (via `if_nametoindex`) and construct the scoped
+    /// `ServerAddr` directly.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let err = |msg: String| ServerAddrParseError(msg);
+        match s.split_once('%') {
+            None => IpAddr::from_str(s)
+                .map(Self::from)
+                .map_err(|e| err(format!("invalid IP address {s:?}: {e}"))),
+            Some((addr, zone)) => {
+                let addr = Ipv6Addr::from_str(addr)
+                    .map_err(|e| err(format!("invalid scoped IPv6 address {s:?}: {e}")))?;
+                let scope_id = zone.parse::<u32>().map_err(|_| {
+                    err(format!(
+                        "non-numeric IPv6 zone {zone:?} in {s:?}; resolve interface names to a numeric scope id"
+                    ))
+                })?;
+                Ok(Self::V6 {
+                    addr,
+                    scope_id: Some(scope_id),
+                })
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for ServerAddr {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for ServerAddr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Configuration for the NameServer
 #[derive(Clone, Debug)]
 #[cfg_attr(
@@ -202,7 +367,11 @@ impl ResolverConfig {
 #[non_exhaustive]
 pub struct NameServerConfig {
     /// The address which the DNS NameServer is registered at.
-    pub ip: IpAddr,
+    ///
+    /// Serialized under the key `ip` for backwards compatibility, as a string that may carry
+    /// a numeric IPv6 zone (e.g. `"fe80::1%3"`).
+    #[cfg_attr(feature = "serde", serde(rename = "ip"))]
+    pub addr: ServerAddr,
     /// Whether to trust `NXDOMAIN` responses from upstream nameservers.
     ///
     /// When this is `true`, and an empty `NXDOMAIN` response with an empty answers set is
@@ -222,7 +391,7 @@ impl NameServerConfig {
     /// Constructs a nameserver configuration with a UDP and TCP connections
     pub fn udp_and_tcp(ip: IpAddr) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::udp(), ConnectionConfig::tcp()],
         }
@@ -231,7 +400,7 @@ impl NameServerConfig {
     /// Constructs a nameserver configuration with a single UDP connection
     pub fn udp(ip: IpAddr) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::udp()],
         }
@@ -240,7 +409,7 @@ impl NameServerConfig {
     /// Constructs a nameserver configuration with a single TCP connection
     pub fn tcp(ip: IpAddr) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::tcp()],
         }
@@ -250,7 +419,7 @@ impl NameServerConfig {
     #[cfg(feature = "__tls")]
     pub fn tls(ip: IpAddr, server_name: Arc<str>) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::tls(server_name)],
         }
@@ -260,7 +429,7 @@ impl NameServerConfig {
     #[cfg(feature = "__https")]
     pub fn https(ip: IpAddr, server_name: Arc<str>, path: Option<Arc<str>>) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::https(server_name, path)],
         }
@@ -270,7 +439,7 @@ impl NameServerConfig {
     #[cfg(feature = "__quic")]
     pub fn quic(ip: IpAddr, server_name: Arc<str>) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::quic(server_name)],
         }
@@ -280,7 +449,7 @@ impl NameServerConfig {
     #[cfg(feature = "__h3")]
     pub fn h3(ip: IpAddr, server_name: Arc<str>, path: Option<Arc<str>>) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![ConnectionConfig::h3(server_name, path)],
         }
@@ -298,7 +467,7 @@ impl NameServerConfig {
     #[cfg(any(feature = "__tls", feature = "__quic"))]
     pub fn opportunistic_encryption(ip: IpAddr) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses: true,
             connections: vec![
                 ConnectionConfig::udp(),
@@ -318,10 +487,18 @@ impl NameServerConfig {
         connections: Vec<ConnectionConfig>,
     ) -> Self {
         Self {
-            ip,
+            addr: ip.into(),
             trust_negative_responses,
             connections,
         }
+    }
+
+    /// Sets the IPv6 scope (zone) identifier for this server's address.
+    ///
+    /// See [`ServerAddr::with_scope_id`]. This is a no-op for IPv4 addresses.
+    pub fn with_scope_id(mut self, scope_id: u32) -> Self {
+        self.addr = self.addr.with_scope_id(scope_id);
+        self
     }
 }
 

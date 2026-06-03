@@ -7,9 +7,8 @@
 
 use std::future::Future;
 use std::marker::Unpin;
-use std::net::{IpAddr, SocketAddr};
 #[cfg(feature = "__quic")]
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 #[cfg(any(feature = "__tls", feature = "__https"))]
 use std::sync::Arc;
@@ -34,7 +33,7 @@ use crate::net::quic::QuicClientStream;
 #[cfg(feature = "__tls")]
 use crate::net::tls::{client_config, default_provider, tls_exchange};
 use crate::{
-    config::{ConnectionConfig, ProtocolConfig},
+    config::{ConnectionConfig, ProtocolConfig, ServerAddr},
     name_server_pool::PoolContext,
     net::{
         NetError,
@@ -58,7 +57,7 @@ pub trait ConnectionProvider: 'static + Clone + Send + Sync + Unpin {
     /// Create a new connection.
     fn new_connection(
         &self,
-        ip: IpAddr,
+        addr: ServerAddr,
         config: &ConnectionConfig,
         cx: &PoolContext,
     ) -> Result<Self::FutureConn, NetError>;
@@ -74,11 +73,11 @@ impl<P: RuntimeProvider> ConnectionProvider for P {
 
     fn new_connection(
         &self,
-        ip: IpAddr,
+        addr: ServerAddr,
         config: &ConnectionConfig,
         cx: &PoolContext,
     ) -> Result<Self::FutureConn, NetError> {
-        let remote_addr = SocketAddr::new(ip, config.port);
+        let remote_addr = addr.socket_addr(config.port);
         match (&config.protocol, self.quic_binder()) {
             (ProtocolConfig::Udp, _) => {
                 let (timeout, os_port_selection, avoid_local_udp_ports, bind_addr, provider) = (

@@ -646,7 +646,7 @@ impl<P: ConnectionProvider> RecursorDnsHandle<P> {
                 config_group
                     .iter()
                     .map(|server| {
-                        if let Some(ns) = cache.get_mut(&server.ip) {
+                        if let Some(ns) = cache.get_mut(&server.addr.ip()) {
                             return ns.clone();
                         }
 
@@ -657,7 +657,7 @@ impl<P: ConnectionProvider> RecursorDnsHandle<P> {
                             &self.pool_context.options,
                             self.conn_provider.clone(),
                         ));
-                        cache.insert(server.ip, ns.clone());
+                        cache.insert(server.addr.ip(), ns.clone());
                         ns
                     })
                     .collect()
